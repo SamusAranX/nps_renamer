@@ -7,6 +7,7 @@ import glob
 import os.path
 import re
 import shutil
+import sys
 from dataclasses import dataclass
 from os import makedirs
 from os.path import basename
@@ -92,6 +93,10 @@ def main(args):
 					tsv_info,
 				)
 				entries.append(entry)
+
+	if not entries:
+		print("The TSV files are not optional")
+		sys.exit(1)
 
 	# matching function
 	def predicate(entry: TSVEntry, content_id: str, title_id: str, patch: str) -> bool:
