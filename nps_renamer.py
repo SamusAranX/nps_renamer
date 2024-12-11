@@ -4,6 +4,7 @@
 import argparse
 import csv
 import glob
+import hashlib
 import os.path
 import re
 import shutil
@@ -11,6 +12,7 @@ import sys
 from dataclasses import dataclass
 from os import makedirs
 from os.path import basename
+from re import match
 
 import unicodedata
 
@@ -20,7 +22,7 @@ class TSVInfo:
 	console: str
 	type: str
 
-	def path(self) -> str:
+	def dir_path(self) -> str:
 		return os.path.join(self.console, self.type)
 
 
@@ -32,7 +34,14 @@ class TSVEntry:
 	content_id: str
 	app_version: str
 	update_version: str
+	sha256: str
 	info: TSVInfo
+
+	def file_name(self, ext: str) -> str:
+		if self.update_version:
+			return f"[{self.title_id}] {self.name} ({self.update_version}){ext}"
+
+		return f"[{self.title_id}] {self.name}{ext}"
 
 
 info = {
@@ -53,12 +62,36 @@ info = {
 	"PSV_UPDATES.tsv": TSVInfo("PSV", "update"),
 	"PSX_GAMES.tsv": TSVInfo("PSX", "game"),
 }
-pkg_re = re.compile(r"^(.*?-([A-Z]{4}\d{5})_00-.*?)(?:_patch_(.*?))?\.pkg$", re.I)
 
 
 def sanitize_file_name(value: str) -> str:
 	value = unicodedata.normalize("NFC", value)
 	return re.sub(r"[<>:\"/\\|?*]", "_", value).strip()
+
+
+def sha256sum_new(filename: str) -> str:
+	with open(filename, "rb", buffering=0) as f:
+		return hashlib.file_digest(f, "sha256").hexdigest()
+
+
+# sha256sum() but for python versions < 3.11
+def sha256sum_old(filename: str) -> str:
+	h = hashlib.sha256()
+	b = bytearray(128 * 1024)
+	mv = memoryview(b)
+	with open(filename, "rb", buffering=0) as f:
+		while n := f.readinto(mv):
+			h.update(mv[:n])
+	return h.hexdigest()
+
+
+def sha256sum(filename: str) -> str:
+	try:
+		# try the python 3.11+ method first
+		return sha256sum_new(filename)
+	except AttributeError:
+		# fall back to the python < 3.11 method
+		return sha256sum_old(filename)
 
 
 def main(args):
@@ -91,6 +124,7 @@ def main(args):
 					row_val(headers, row, "Content ID"),
 					row_val(headers, row, "App Version"),
 					row_val(headers, row, "Update Version"),
+					row_val(headers, row, "SHA256"),
 					tsv_info,
 				)
 				entries.append(entry)
@@ -100,14 +134,6 @@ def main(args):
 		sys.exit(1)
 
 	print("TSV files loaded")
-
-	# matching function
-	def predicate(entry: TSVEntry, content_id: str, title_id: str, patch: str) -> bool:
-		patch = patch.lstrip("0")
-		if patch:
-			return entry.title_id == title_id and entry.update_version == patch
-
-		return entry.content_id == content_id and entry.title_id == title_id
 
 	# dict of path: number of times encountered
 	dupe_paths: dict[str, int] = {}
@@ -119,22 +145,21 @@ def main(args):
 	unhandled_files: list[str] = []
 
 	for pkg_file in pkg_files:
-		pkg_base = basename(pkg_file)
-		pkg_ext = os.path.splitext(pkg_base)[1]
-		content_id, title_id, patch = pkg_re.findall(pkg_base)[0]
-		matching_entry = next((e for e in entries if predicate(e, content_id, title_id, patch)), None)
+		pkg_ext = os.path.splitext(pkg_file)[1]
+		sha256 = sha256sum(pkg_file)
+
+		matching_entry = next((e for e in entries if e.sha256 == sha256), None)
+		print("sha256 computed!")
 		if not matching_entry:
 			unhandled_files.append(pkg_file)
 			continue
 
 		if args.copy_dir:
-			dest_dir = os.path.join(args.copy_dir, matching_entry.info.path())
+			dest_dir = os.path.join(args.copy_dir, matching_entry.info.dir_path())
 		else:
-			dest_dir = os.path.join(args.pkg_dir, matching_entry.info.path())
-		dest_file = f"[{matching_entry.title_id}] {matching_entry.name}{pkg_ext}"
-		if matching_entry.update_version:
-			dest_file = f"[{matching_entry.title_id}] {matching_entry.name} ({matching_entry.update_version}){pkg_ext}"
+			dest_dir = os.path.join(args.pkg_dir, matching_entry.info.dir_path())
 
+		dest_file = matching_entry.file_name(pkg_ext)
 		dest_file = sanitize_file_name(dest_file)
 		dest_path = os.path.join(dest_dir, dest_file)
 
