@@ -8,6 +8,7 @@ import hashlib
 import os.path
 import re
 import shutil
+import struct
 import sys
 from dataclasses import dataclass
 from os import makedirs
@@ -39,9 +40,9 @@ class TSVEntry:
 
 	def file_name(self, ext: str) -> str:
 		if self.update_version:
-			return f"[{self.title_id}] {self.name} ({self.update_version}){ext}"
+			return f"{self.name} ({self.update_version}) [{self.title_id}]{ext}"
 
-		return f"[{self.title_id}] {self.name}{ext}"
+		return f"{self.name} [{self.title_id}]{ext}"
 
 
 info = {
@@ -62,11 +63,17 @@ info = {
 	"PSV_UPDATES.tsv": TSVInfo("PSV", "update"),
 	"PSX_GAMES.tsv": TSVInfo("PSX", "game"),
 }
+pkg_re = re.compile(r"^([A-Z]{2}\d{4}-([A-Z]{4}\d{5})_00-.*?)(?:_patch_(.*?))?\.pkg$", re.I)
 
 
 def sanitize_file_name(value: str) -> str:
 	value = unicodedata.normalize("NFC", value)
 	return re.sub(r"[<>:\"/\\|?*]", "_", value).strip()
+
+
+def is_pkg(filename: str) -> bool:
+	with open(filename, "rb") as f:
+		return struct.unpack("<i", f.read(4))[0] == 0x474B507F
 
 
 def sha256sum_new(filename: str) -> str:
@@ -94,15 +101,28 @@ def sha256sum(filename: str) -> str:
 		return sha256sum_old(filename)
 
 
-def main(args):
-	tsv_files = glob.glob(os.path.join(args.tsv_dir, "*.tsv"))
-	pkg_files = glob.glob(os.path.join(args.pkg_dir, "*.pkg"))
+def predicate_filename(entry: TSVEntry, content_id: str, title_id: str, patch: str) -> bool:
+	patch = patch.lstrip("0")
+	if patch:
+		return entry.title_id == title_id and entry.update_version == patch
 
-	def row_val(headers: list[str], row: list[str], col_name: str) -> str:
+	return entry.content_id == content_id and entry.title_id == title_id
+
+
+def predicate_hash(entry: TSVEntry, sha256: str) -> bool:
+	return entry.sha256 == sha256
+
+
+def row_val(headers: list[str], row: list[str], col_name: str) -> str:
 		try:
 			return row[headers.index(col_name)]
 		except ValueError:
 			return ""
+
+
+def main(args):
+	tsv_files = glob.glob(os.path.join(args.tsv_dir, "*.tsv"))
+	tsv_files.sort(reverse=True)
 
 	# read TSV files into memory
 	entries: list[TSVEntry] = []
@@ -135,6 +155,14 @@ def main(args):
 
 	print("TSV files loaded")
 
+	print("Finding .pkg files…")
+	pkg_files = glob.glob(os.path.join(args.pkg_dir, "**", "*.pkg"), recursive=True)
+	if not pkg_files:
+		print("No .pkg files found")
+		return
+
+	print(f"{len(pkg_files)} .pkg", "file" if len(pkg_files) == 1 else "files", "found")
+
 	# dict of path: number of times encountered
 	dupe_paths: dict[str, int] = {}
 
@@ -144,12 +172,19 @@ def main(args):
 	# list of files that weren't found in the TSV files
 	unhandled_files: list[str] = []
 
+	# find .pkg files in the data from the TSV files and assemble a list of src -> dest paths
 	for pkg_file in pkg_files:
-		pkg_ext = os.path.splitext(pkg_file)[1]
-		sha256 = sha256sum(pkg_file)
+		if not is_pkg(pkg_file):
+			continue
 
-		matching_entry = next((e for e in entries if e.sha256 == sha256), None)
-		print("sha256 computed!")
+		if matches := pkg_re.findall(basename(pkg_file)):
+			content_id, title_id, patch = matches[0]
+			matching_entry = next((e for e in entries if predicate_filename(e, content_id, title_id, patch)), None)
+		else:
+			print(f"Trying SHA256 for {pkg_file}…")
+			sha256 = sha256sum(pkg_file)
+			matching_entry = next((e for e in entries if predicate_hash(e, sha256)), None)
+
 		if not matching_entry:
 			unhandled_files.append(pkg_file)
 			continue
@@ -159,6 +194,7 @@ def main(args):
 		else:
 			dest_dir = os.path.join(args.pkg_dir, matching_entry.info.dir_path())
 
+		pkg_ext = os.path.splitext(pkg_file)[1]
 		dest_file = matching_entry.file_name(pkg_ext)
 		dest_file = sanitize_file_name(dest_file)
 		dest_path = os.path.join(dest_dir, dest_file)
@@ -175,7 +211,13 @@ def main(args):
 			dupe_paths[dest_path_lower] = 0
 
 		makedirs(dest_dir, exist_ok=True)
-		move_files.append((pkg_file, dest_path))
+
+		if pkg_file != dest_path:
+			move_files.append((pkg_file, dest_path))
+
+	if not move_files:
+		print("There's nothing to do!")
+		return
 
 	for src_path, dest_path in move_files:
 		try:
@@ -192,7 +234,7 @@ def main(args):
 			raise e
 
 	for pkg_file in unhandled_files:
-		print(f"Couldn't handle {pkg_file} because it was not found in the TSV files")
+		print("Couldn't", "copy" if args.copy_dir else "move", pkg_file, "because it was not found in the TSV files")
 
 
 if __name__ == "__main__":
