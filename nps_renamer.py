@@ -73,6 +73,7 @@ def main(args):
 
 	# read TSV files into memory
 	entries: list[TSVEntry] = []
+	print("Loading TSV files…")
 	for tsv_file in tsv_files:
 		tsv_base = basename(tsv_file)
 		tsv_info = info[tsv_base]
@@ -97,6 +98,8 @@ def main(args):
 	if not entries:
 		print("The TSV files are not optional")
 		sys.exit(1)
+
+	print("TSV files loaded")
 
 	# matching function
 	def predicate(entry: TSVEntry, content_id: str, title_id: str, patch: str) -> bool:
@@ -154,12 +157,12 @@ def main(args):
 			if args.copy_dir:
 				print("Copying", src_path, "to", dest_path)
 				if not args.dry_run:
-					shutil.copy(src_path, dest_path)
+					shutil.copyfile(src_path, dest_path)
 			else:
 				print("Moving", src_path, "to", dest_path)
 				if not args.dry_run:
 					shutil.move(src_path, dest_path)
-		except (OSError, FileNotFoundError, shutil.Error) as e:
+		except shutil.Error as e:
 			print("Unable to", "copy" if args.copy_dir else "move", src_path, "to", dest_path)
 			raise e
 
