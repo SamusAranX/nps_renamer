@@ -239,8 +239,8 @@ def main(args):
 
 if __name__ == "__main__":
 	parser = argparse.ArgumentParser(description="PKG autorenamer")
-	parser.add_argument("-t", "--tsv-dir", metavar="tsv dir", type=str, required=True, help="The directory containing the required .tsv files")
-	parser.add_argument("-c", "--copy-dir", metavar="copy destination", type=str, help="Specify a directory here to copy the renamed files there instead of renaming in place (Potentially slower)")
+	parser.add_argument("-t", "--tsv-dir", metavar="TSV DIR", type=str, required=True, help="The directory containing the required .tsv files")
+	parser.add_argument("-c", "--copy-dir", metavar="COPY DESTINATION", type=str, help="Specify a directory here to copy the renamed files there instead of renaming in place (Potentially slower)")
 	parser.add_argument("-n", "--dry-run", action="store_true", help="Don't perform any move or copy operations")
 	parser.add_argument("pkg_dir", type=str, help="The pkg directory")
 
