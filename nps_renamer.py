@@ -40,24 +40,32 @@ class TSVEntry:
 
 	def file_name(self, ext: str) -> str:
 		if self.update_version:
-			return f"{self.name} ({self.update_version}) [{self.title_id}]{ext}"
+			return f"{self.name.strip()} ({self.update_version.strip()}) [{self.title_id.strip()}]{ext}"
 
-		return f"{self.name} [{self.title_id}]{ext}"
+		return f"{self.name.strip()} [{self.title_id.strip()}]{ext}"
 
 
 @dataclass
 class PKGHeader:
+	_file: str
 	magic: int
 	pkg_revision: int
 	pkg_type: int
-	content_id: str
+	content_id_bytes: bytes
 
 	@classmethod
 	def load(cls, filename):
 		with open(filename, "rb") as f:
 			fmt = ">IHH40x36s12x"
-			magic, pkg_revision, pkg_type, content_id = struct.unpack(fmt, f.read(struct.calcsize(fmt)))
-			return cls(magic, pkg_revision, pkg_type, content_id.decode("ascii"))
+			magic, pkg_revision, pkg_type, content_id_bytes = struct.unpack(fmt, f.read(struct.calcsize(fmt)))
+			return cls(filename, magic, pkg_revision, pkg_type, content_id_bytes)
+
+	def content_id(self) -> str:
+		try:
+			return self.content_id_bytes.decode("ascii")
+		except UnicodeDecodeError:
+			print(self._file)
+			raise
 
 	def is_valid(self):
 		return self.magic == 0x7F504B47
@@ -87,11 +95,6 @@ pkg_re = re.compile(r"^([A-Z]{2}\d{4}-([A-Z]{4}\d{5})_00-.*?)(?:_patch_(.*?))?\.
 def sanitize_file_name(value: str) -> str:
 	value = unicodedata.normalize("NFC", value)
 	return re.sub(r"[<>:\"/\\|?*]", "_", value).strip()
-
-
-def is_pkg(filename: str) -> bool:
-	with open(filename, "rb") as f:
-		return struct.unpack("<i", f.read(4))[0] == 0x474B507F
 
 
 def sha256sum_new(filename: str) -> str:
@@ -180,7 +183,19 @@ def main(args):
 	print("TSV files loaded")
 
 	print("Finding .pkg files…")
-	pkg_files = glob.glob(os.path.join(args.pkg_dir, "**", "*.pkg"), recursive=True)
+	if args.in_list:
+		with open(args.in_list, "r", encoding="utf8") as f:
+			pkg_files = f.readlines()
+			pkg_files = [p.strip() for p in pkg_files]  # strip newline chars
+			print(f"Imported list of .pkg files from {args.in_list}")
+	else:
+		pkg_files = glob.glob(os.path.join(args.pkg_dir, "**", "*.pkg"), recursive=True)
+
+	if args.out_list:
+		with open(args.out_list, "w", encoding="utf8") as f:
+			f.writelines(p.strip() + "\n" for p in pkg_files)
+			print(f"Exported found .pkg files to {args.out_list}")
+
 	if not pkg_files:
 		print("No .pkg files found")
 		return
@@ -212,9 +227,9 @@ def main(args):
 		else:
 			# 2. read the content ID from the file's header and try finding it with that and the file size
 			pkg_size = os.path.getsize(pkg_file)
-			matching_entry = next((e for e in entries if predicate_content_id_and_size(e, pkg_header.content_id, pkg_size)), None)
+			matching_entry = next((e for e in entries if predicate_content_id_and_size(e, pkg_header.content_id(), pkg_size)), None)
 
-		if not matching_entry:
+		if not matching_entry and not args.skip_hash:
 			# 3. last resort: hash the entire file and look for that hash
 			print(f"Trying SHA256 for {pkg_file}…")
 			sha256 = sha256sum(pkg_file)
@@ -277,7 +292,13 @@ if __name__ == "__main__":
 	parser = argparse.ArgumentParser(description="PKG autorenamer")
 	parser.add_argument("-t", "--tsv-dir", metavar="TSV DIR", type=str, required=True, help="The directory containing the required .tsv files")
 	parser.add_argument("-c", "--copy-dir", metavar="COPY DESTINATION", type=str, help="Specify a directory here to copy the renamed files there instead of renaming in place (Potentially slower)")
+
+	inout_group = parser.add_mutually_exclusive_group()
+	inout_group.add_argument("-i", "--in-list", metavar="LIST FILE", type=str, help="Imports a list of .pkg files from a text file")
+	inout_group.add_argument("-o", "--out-list", metavar="LIST FILE", type=str, help="Exports a list of .pkg files to a text file")
+
 	parser.add_argument("-n", "--dry-run", action="store_true", help="Don't perform any move or copy operations")
+	parser.add_argument("-s", "--skip-hash", action="store_true", help="Skip the hashing step (Faster if you know it won't help)")
 	parser.add_argument("pkg_dir", type=str, help="The pkg directory")
 
 	main(parser.parse_args())
