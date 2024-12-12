@@ -10,6 +10,7 @@ import re
 import shutil
 import struct
 import sys
+import time
 from dataclasses import dataclass
 from os import makedirs
 from os.path import basename
@@ -95,6 +96,14 @@ pkg_re = re.compile(r"^([A-Z]{2}\d{4}-([A-Z]{4}\d{5})_00-.*?)(?:_patch_(.*?))?\.
 def sanitize_file_name(value: str) -> str:
 	value = unicodedata.normalize("NFC", value)
 	return re.sub(r"[<>:\"/\\|?*]", "_", value).strip()
+
+
+def format_filesize(num):
+	for unit in ("", "KB", "MB", "GB", "TB"):
+		if abs(num) < 1024.0:
+			return f"{num:3.1f} {unit}"
+		num /= 1024.0
+	return f"{num:.1f} PB"  # hmmm
 
 
 def sha256sum_new(filename: str) -> str:
@@ -271,7 +280,12 @@ def main(args):
 		return
 
 	for src_path, dest_path in move_files:
+		pkg_size = os.path.getsize(src_path)
+		if os.path.exists(dest_path) and os.path.getsize(dest_path) == pkg_size:
+			continue
+
 		try:
+			start = time.time()
 			if args.copy_dir:
 				print("Copying", src_path, "to", dest_path)
 				if not args.dry_run:
@@ -280,6 +294,10 @@ def main(args):
 				print("Moving", src_path, "to", dest_path)
 				if not args.dry_run:
 					shutil.move(src_path, dest_path)
+
+			if not args.dry_run:
+				elapsed = time.time() - start
+				print(f"(Took {elapsed:.2f} seconds for {format_filesize(pkg_size)}, avg {format_filesize(pkg_size / elapsed)}/s)")
 		except shutil.Error as e:
 			print("Unable to", "copy" if args.copy_dir else "move", src_path, "to", dest_path)
 			raise e
