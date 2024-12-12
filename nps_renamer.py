@@ -13,7 +13,6 @@ import sys
 from dataclasses import dataclass
 from os import makedirs
 from os.path import basename
-from re import match
 
 import unicodedata
 
@@ -35,6 +34,7 @@ class TSVEntry:
 	content_id: str
 	app_version: str
 	update_version: str
+	file_size: int
 	sha256: str
 	info: TSVInfo
 
@@ -43,6 +43,24 @@ class TSVEntry:
 			return f"{self.name} ({self.update_version}) [{self.title_id}]{ext}"
 
 		return f"{self.name} [{self.title_id}]{ext}"
+
+
+@dataclass
+class PKGHeader:
+	magic: int
+	pkg_revision: int
+	pkg_type: int
+	content_id: str
+
+	@classmethod
+	def load(cls, filename):
+		with open(filename, "rb") as f:
+			fmt = ">IHH40x36s12x"
+			magic, pkg_revision, pkg_type, content_id = struct.unpack(fmt, f.read(struct.calcsize(fmt)))
+			return cls(magic, pkg_revision, pkg_type, content_id.decode("ascii"))
+
+	def is_valid(self):
+		return self.magic == 0x7F504B47
 
 
 info = {
@@ -109,15 +127,19 @@ def predicate_filename(entry: TSVEntry, content_id: str, title_id: str, patch: s
 	return entry.content_id == content_id and entry.title_id == title_id
 
 
+def predicate_content_id_and_size(entry: TSVEntry, content_id: str, size: int) -> bool:
+	return entry.content_id == content_id and entry.file_size == size
+
+
 def predicate_hash(entry: TSVEntry, sha256: str) -> bool:
 	return entry.sha256 == sha256
 
 
 def row_val(headers: list[str], row: list[str], col_name: str) -> str:
-		try:
-			return row[headers.index(col_name)]
-		except ValueError:
-			return ""
+	try:
+		return row[headers.index(col_name)]
+	except ValueError:
+		return ""
 
 
 def main(args):
@@ -136,6 +158,7 @@ def main(args):
 			for idx, row in enumerate(rd):
 				if idx == 0:
 					headers = row
+					continue
 
 				entry = TSVEntry(
 					row_val(headers, row, "Title ID"),
@@ -144,6 +167,7 @@ def main(args):
 					row_val(headers, row, "Content ID"),
 					row_val(headers, row, "App Version"),
 					row_val(headers, row, "Update Version"),
+					int(float(row_val(headers, row, "File Size") or "0")),
 					row_val(headers, row, "SHA256"),
 					tsv_info,
 				)
@@ -174,17 +198,29 @@ def main(args):
 
 	# find .pkg files in the data from the TSV files and assemble a list of src -> dest paths
 	for pkg_file in pkg_files:
-		if not is_pkg(pkg_file):
+		try:
+			pkg_header = PKGHeader.load(pkg_file)
+			if not pkg_header.is_valid():
+				continue
+		except (struct.error, IOError):
 			continue
 
 		if matches := pkg_re.findall(basename(pkg_file)):
+			# 1. try finding the file via its filename parts (only works if it hasn't been renamed)
 			content_id, title_id, patch = matches[0]
 			matching_entry = next((e for e in entries if predicate_filename(e, content_id, title_id, patch)), None)
 		else:
+			# 2. read the content ID from the file's header and try finding it with that and the file size
+			pkg_size = os.path.getsize(pkg_file)
+			matching_entry = next((e for e in entries if predicate_content_id_and_size(e, pkg_header.content_id, pkg_size)), None)
+
+		if not matching_entry:
+			# 3. last resort: hash the entire file and look for that hash
 			print(f"Trying SHA256 for {pkg_file}…")
 			sha256 = sha256sum(pkg_file)
 			matching_entry = next((e for e in entries if predicate_hash(e, sha256)), None)
 
+		# 4. if we don't have a match by now, abort
 		if not matching_entry:
 			unhandled_files.append(pkg_file)
 			continue
